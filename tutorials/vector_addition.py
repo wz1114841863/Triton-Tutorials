@@ -85,4 +85,8 @@ if __name__ == "__main__":
         f"{torch.max(torch.abs(output_torch - output_triton))}"
     )
 
-    benchmark.run(print_data=True, show_plots=True)
+    benchmark.run(
+        print_data=True,
+        show_plots=True,
+        save_path="./tutorials/results/vector_addition/",
+    )
