@@ -1,5 +1,6 @@
 # SGEMM
-
+## 针对 RTX 3060 (Ampere 架构)
+export TORCH_CUDA_ARCH_LIST="8.6"
 ## HGEMM/SGEMM Supported Matrix
 
 |CUDA Cores|Sliced K(Loop over K)|Tile Block|Tile Thread|

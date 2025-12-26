@@ -16,12 +16,18 @@
 #define BFLOAT2(value) (reinterpret_cast<__nv_bfloat162 *>(&(value))[0])
 #define LDST64BITS(value) (reinterpret_cast<float2 *>(&(value))[0])
 #define LDST128BITS(value) (reinterpret_cast<float4 *>(&(value))[0])
+// 提交一个"批次"的异步拷贝请求
 #define CP_ASYNC_COMMIT_GROUP() asm volatile("cp.async.commit_group;\n" ::)
+// 等待所有已提交的异步拷贝请求完成
 #define CP_ASYNC_WAIT_ALL() asm volatile("cp.async.wait_all;\n" ::)
+// 等待直到只剩下 N 个批次没做完
+// 在双缓冲中,通常 N=0(全做完)
 #define CP_ASYNC_WAIT_GROUP(n)                                                 \
   asm volatile("cp.async.wait_group %0;\n" ::"n"(n))
 // ca(cache all, L1 + L2): support 4, 8, 16 bytes, cg(cache global, L2): only
 // support 16 bytes.
+// 核心指令:从 Global (src) 搬 bytes 字节到 Shared (dst)
+// CA = Cache All (L1 + L2 缓存), CG = Cache Global (只用 L2)
 #define CP_ASYNC_CA(dst, src, bytes)                                           \
   asm volatile(                                                                \
       "cp.async.ca.shared.global.L2::128B [%0], [%1], %2;\n" ::"r"(dst),       \
@@ -275,6 +281,7 @@ __global__ void sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_kernel(
   const int ty = threadIdx.y;
   const int tid = ty * blockDim.x + tx;
 
+  // 依旧是双缓冲
   __shared__ float s_a[2][BK][BM + OFFSET];
   __shared__ float s_b[2][BK][BN + OFFSET];
 
@@ -417,11 +424,13 @@ __global__ void sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async_kernel(
     int load_a_gmem_addr = load_a_gmem_m * K + load_a_gmem_k;
     int load_b_gmem_k = load_b_smem_k;
     int load_b_gmem_addr = load_b_gmem_k * N + load_b_gmem_n;
+    // 1. 算出 Shared Memory 的物理地址 (uint32_t)
     uint32_t load_b_smem_ptr =
         __cvta_generic_to_shared(&s_b[0][load_b_smem_k][load_b_smem_n]);
 // 2 cp.async issue, 16 bytes = 4 float.
 #pragma unroll
     for (int i = 0; i < 8; i += 4) {
+      // 2. 发令给 DMA:把 Global b[...] 搬到 Shared load_b_smem_ptr
       CP_ASYNC_CA(load_b_smem_ptr + i * 4, &b[load_b_gmem_addr + i], 16);
     }
     CP_ASYNC_COMMIT_GROUP();
@@ -432,6 +441,7 @@ __global__ void sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async_kernel(
     }
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
+      // 由于A需要转置, 所有A依旧是使用寄存器搬运到Shared
       s_a[0][load_a_smem_k + i][load_a_smem_m] = r_load_a[i];
     }
     CP_ASYNC_WAIT_GROUP(0);
@@ -479,6 +489,7 @@ __global__ void sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async_kernel(
 
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
+      // 由于A还是使用寄存器搬移的, 这里需要再搬回Shared
       s_a[smem_sel_next][load_a_smem_k + i][load_a_smem_m] = r_load_a[i];
     }
 
@@ -503,6 +514,8 @@ __global__ void sgemm_t_8x8_sliced_k16_f32x4_bcf_dbuf_async_kernel(
   }
 
 #pragma unroll
+  // 将8×8的结果分两次写回全局内存
+  // 每次使用FLOAT4(128位)指令写4个float
   for (int i = 0; i < TM / 2; i++) {
     int store_c_gmem_m = by * BM + ty * TM / 2 + i;
     int store_c_gmem_n = bx * BN + tx * TN / 2;
